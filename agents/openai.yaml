@@ -1,0 +1,5 @@
+interface:
+  display_name: "AI Marketing API"
+  short_description: "Build customer publish APIs"
+  default_prompt: "Use $aimarketing-api to add an AI Marketing compatible publish API gateway, including secure token generation."
+
