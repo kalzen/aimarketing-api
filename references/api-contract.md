@@ -70,6 +70,8 @@ Required: `title`, `body`.
 
 Optional: `description`, `faq`, `image_urls`, `category_id`, `category_slug`.
 
+`image_urls` may contain remote CDN or signed URLs. Customer sites that persist those URLs should allow at least 2048 characters or import the image and store a shorter local path.
+
 Response must include URL:
 
 ```json
