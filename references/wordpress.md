@@ -3,7 +3,7 @@
 Prefer a small plugin over editing theme files. Kalzen ships a connector, `aimarketing-connector` (in the `aimarketing` repo under `integrations/wordpress/aimarketing-connector`). It already handles Bearer auth (including `REDIRECT_HTTP_AUTHORIZATION`), categories, create, update by `published_url`, localising body images and WebP on old WordPress. Reuse it where possible, but it **does not yet** meet every rule of this skill, so when you install or extend it verify and patch:
 
 - `POST /posts` only creates and `PUT /posts` only updates. AI Marketing updates with POST by default, so set `api_update_method=put` for WordPress projects (or make the POST handler upsert when `published_url` is present).
-- Only the **first** `image_urls` entry is sideloaded (body `<img>` tags are all localised) and each download allows 60 s: add the per-image/total time budget below.
+- It downloads (sideloads) images into the Media Library by default (`import_images` = on, 60 s per download). The CDN URLs are public and permanent, so **turn importing off** (use the CDN directly, see Images below); only the cover needs special handling.
 - No create idempotency key: add it (below) so AI Marketing retries do not duplicate posts.
 
 If you build your own, keep to the behaviour described here.
@@ -59,24 +59,26 @@ Pretty permalinks off → use `?rest_route=/aimarketing/v1/posts` as the path. M
 
 ## Create
 
-- `wp_insert_post` with empty content first, then write content once `post_id` exists so imported images attach to the post.
+- `wp_insert_post` with the content (no image import needed; body `<img>` keep their CDN `src`).
 - `post_title` ← `title` (accept ≥ 500 chars), `post_excerpt` ← `description`, status from setting (`publish` default).
 - Sanitise `body` with `wp_kses_post` (keeps `img`, headings, tables); wrap bare text blocks in paragraphs with `wpautop` (AI bodies may contain text separated by blank lines).
 - Append FAQ as `<h2>` + `<h3>`/`<p>` pairs when `faq` is present.
 - **Idempotency:** store a key (`sha1(title + body)`) in post meta; if a post with that key was created in the last 15 minutes return its permalink instead of creating another (AI Marketing retries after timeouts).
 - Return `['url' => get_permalink($post_id)]` with status 200/201.
 
-## Images (multiple, WebP, time budget)
+## Images (use the CDN, do not download)
 
-- Process **all** `image_urls` and body `<img>` tags: sideload each to the Media Library, first image becomes the featured image, body `src` are rewritten to the local attachment URLs.
-- WordPress < 5.8 rejects `.webp`: add `upload_mimes` and a `wp_check_filetype_and_ext` fix just for the sideload (see the connector's `AIMKT_Media`).
-- Each download: `download_url($url, 10)` (not 60), total budget ≈ 25 s for the whole request; if the budget is exceeded or a download fails, keep the original remote URL in the body and continue. AI Marketing waits 60 s per attempt and retries 3 times, so a slow synchronous import produces duplicate posts. For many large images, schedule the import with `wp_schedule_single_event` and return immediately.
-- Skip re-downloading images already imported (post meta `_aimkt_source_url` = URL without query string).
+- Keep every body `<img>` exactly as sent (CDN `src`); `wp_kses_post` allows it. Do **not** call `download_url` / `media_handle_sideload` for the body or for `image_urls`. Default the connector's `import_images` setting to **off**.
+- Store all `image_urls` in post meta (e.g. `_aimkt_image_urls`, JSON) and the first as `_aimkt_cover_url`.
+- Featured image from the CDN without importing: output `_aimkt_cover_url` through the `post_thumbnail_html` filter (and the `get_the_post_thumbnail_url` / `wp_get_attachment_image_src` filters for themes that read the URL), or use an existing "external featured image" plugin. If the theme insists on a real attachment, import **only the cover**: `download_url($url, 10)`, falling back to the CDN URL on failure.
+- `.webp` renders from the CDN in every modern browser, so the WordPress < 5.8 mime problem only appears if importing is enabled (then add the `upload_mimes` + `wp_check_filetype_and_ext` fix from the connector's `AIMKT_Media`).
+- Allow the CDN host in any CSP / hotlink rule of the site.
+- AI Marketing waits 60 s per attempt and retries 3 times: a synchronous import of several images is what produces duplicate posts.
 
 ## Update
 
 - Find by `published_url`: post meta `_aimkt_published_url` first, then `url_to_postid($published_url)`; tolerate trailing slash and `http`/`https`. Not found → `404` JSON, never create.
-- `wp_update_post`, re-apply content/category/images (replace the featured image and body images when `force_replace_images` is true), keep the slug.
+- `wp_update_post`, re-apply content/category/images (replace the cover meta and body images when `force_replace_images` is true), keep the slug.
 - Respond `['success' => true, 'url' => get_permalink($post_id)]` with the **same** permalink.
 
 ## Tests / validation

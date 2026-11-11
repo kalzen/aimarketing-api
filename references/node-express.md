@@ -111,7 +111,7 @@ async function resolveCategory({ categoryId, categorySlug }) {
 }
 ```
 
-Store `imageUrls` in a `text`/`jsonb` column, the first one as thumbnail. Never use `varchar(255)`. Do not download images synchronously with a long timeout; if you import them, cap each download (≤ 10 s) and fall back to the remote URL.
+Store `imageUrls` in a `text`/`jsonb` column, the first one as thumbnail. Never use `varchar(255)`. Do not download the images: store and render the CDN URLs as they are (see `images.md`). In Next.js add the CDN host to `images.remotePatterns` (or use `unoptimized`).
 
 ## Tests
 

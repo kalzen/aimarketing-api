@@ -86,7 +86,7 @@ Exactly what AI Marketing sends:
 - `title` up to **500** chars, `description` up to **500**, `faq[].question` up to 500, `faq[].answer` up to **2000**. Do not reject (or truncate) shorter limits like 200.
 - `body` is HTML produced by AI: `h2/h3/h4`, `p`, `ul/ol/li`, `strong/em`, `a`, `table`, `blockquote`, `img`. Paragraphs are **not guaranteed to be wrapped in `<p>`**: bare text blocks separated by blank lines occur next to headings. Normalise on save (wrap bare blocks in `<p>`, or `nl2br`/`wpautop` equivalent) or the page renders as one wall of text.
 - Unresolved image placeholders (`{{IMAGE_URL_1}}`) are stripped by AI Marketing before sending. A defensive site may also drop any `<img>` whose `src` contains `IMAGE_URL`.
-- `image_urls`: 1 to 3 (sometimes more) absolute https URLs, first one is the cover. The same URLs are inside `body` as `<img src>`. Full rules: `images.md`.
+- `image_urls`: 1 to 3 (sometimes more) absolute https public CDN URLs, first one is the cover. The same URLs are inside `body` as `<img src>`. **Use them directly; do not download or re-host them.** Full rules: `images.md`.
 - Unknown extra fields may appear (e.g. `force_replace_images`). Ignore them.
 
 Response (HTTP 200 or 201):

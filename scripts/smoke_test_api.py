@@ -226,13 +226,16 @@ def check_write(args: argparse.Namespace, report: Report) -> None:
     if page.status != 200:
         report.fail(f"Mở {created_url} trả {page.status}.")
     else:
-        found = [image for image in IMAGES if image.split("/")[-1] in page.body]
+        found = [image for image in IMAGES if image in page.body]
         if len(found) == len(IMAGES):
-            report.ok("Trang có đủ 3/3 ảnh trong nội dung (hoặc ảnh đã nhập về dưới tên khác — xác nhận bằng mắt).")
+            report.ok("Trang có đủ 3/3 ảnh và dùng thẳng URL CDN gốc (không tải về).")
         elif page.body and "<img" not in page.body.lower():
             report.fail("Trang không có thẻ <img> nào: ảnh trong body bị lọc mất.")
         else:
-            report.warn(f"Chỉ thấy {len(found)}/3 tên ảnh gốc trong HTML (đúng nếu site tải ảnh về và đổi URL).")
+            report.warn(
+                f"Chỉ thấy {len(found)}/3 URL ảnh gốc trong HTML: site đang tải ảnh về hoặc đổi URL. "
+                "Phải cho phép dùng thẳng URL CDN (references/images.md); tải ảnh về làm quá giờ và sinh bài trùng."
+            )
         if "{{IMAGE_URL" in page.body:
             report.fail("Trang còn placeholder {{IMAGE_URL_N}}.")
 

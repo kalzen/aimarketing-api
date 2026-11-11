@@ -165,6 +165,8 @@ private function imageUrls(array $data): array
 }
 ```
 
+Images are stored and rendered exactly as received: **no `Http::get`/download/`Storage::put` of the image URLs** during create or update. Allow the CDN host in the site's CSP `img-src` and any image whitelist.
+
 Update: find by slug from `published_url` (last path segment, tolerate trailing slash/query/scheme/www), update the same row, do not change the slug, only overwrite category/images when provided, keep `aimkt_key` in sync. Return the same public URL.
 
 Category resolution (never throws; mind integer primary keys on Postgres):

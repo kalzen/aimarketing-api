@@ -15,7 +15,7 @@ Use this skill to add (or repair) the customer-side API that lets `aimarketing` 
 2. Read `references/api-contract.md` (exact payloads, limits, client behaviour). It is the source of truth.
 3. Read the topic references that apply:
    - Categories / AI suggestion: `references/categories.md`
-   - Multiple images, WebP, long URLs, import vs hotlink: `references/images.md`
+   - Images (use the CDN URLs directly, multiple images, WebP, long URLs): `references/images.md`
    - Stack pattern: `references/laravel.md`, `references/wordpress.md`, `references/node-express.md`
 4. Generate the token (`scripts/generate_api_token.py`) and store it per "Token" below.
 5. Implement the four endpoints following the **Non-negotiable rules**.
@@ -38,10 +38,10 @@ Every request carries `Authorization: Bearer <api_token>`, `Accept: application/
 1. **Create and update are different operations.** `POST /api/posts` always creates. Updating must hit the existing post found by `published_url`. AI Marketing defaults to sending updates with **POST** to the same path (`api_update_method=post`); if the site only updates on PUT, every "update" silently creates a duplicate post with a new slug. Make `POST` with a `published_url` behave as an update (upsert) **and** support `PUT`; if you cannot, tell the user to set `api_update_method=put` for the project.
 2. **Update keeps the URL.** Return the same `url` (or just `{ "success": true }`). A different URL makes AI Marketing re-point the post to it and means a new post was created.
 3. **Return an absolute production `url` on create** (HTTP 200/201 with JSON). No `url` = AI Marketing treats the publish as failed and retries up to 3 times (60s timeout each) → duplicates. Never leak local paths (`/public`, `/project/public`, `localhost`, `/index.php/`).
-4. **Be idempotent and fast.** Answer within ~30s. A slow or failing response is retried with the same payload, so guard against duplicates (same title+body within 15 minutes returns the existing URL). Import images in the background or with a hard time budget; never 500 because an image failed.
+4. **Be idempotent and fast.** Answer within ~30s. A slow or failing response is retried with the same payload, so guard against duplicates (same title+body within 15 minutes returns the existing URL). Never 500 because of an image.
 5. **Be lenient with validation.** AI Marketing titles reach 500 chars, descriptions 500, FAQ answers 2000. Ignore unknown fields (`force_replace_images`, `replace_images`, future ones). Unknown/missing categories and empty `image_urls` must never block publishing.
 6. **Resolve the category** by `category_id` first (a string, may be non-numeric), then `category_slug`, then the site default. This is how the AI-suggested category is applied. Return only usable, active categories from the categories endpoint. See `references/categories.md`.
-7. **Accept many images.** `image_urls` has 1–3+ entries (first = cover/thumbnail); the same URLs appear in `<img src>` inside `body`. Store all of them, keep the `<img>` tags, keep `alt`, never truncate a URL to 255 chars (use `text` or ≥2048). See `references/images.md`.
+7. **Use the CDN image URLs as they are — do not download them.** `image_urls` (1–3+, first = cover) and the `<img src>` in `body` are public, non-expiring CDN URLs (WebP). Store and render them directly. Do not re-host, rename or rewrite them, do not fetch them during the request, and do not report that the site "downloads the images itself": that is the main cause of timeouts and duplicate posts. Keep every URL (never `varchar(255)`; use `text`/≥2048), keep the `<img>` tags with `alt`, and allow the CDN host in CSP/hotlink/image-proxy rules. Importing is an opt-in exception (customer request, or `site_image_delivery=signed_fetch`). See `references/images.md`.
 8. **Do not redirect the API.** A 301/302 (http→https, www, trailing slash) turns the POST into a GET. The `website_url` configured in AI Marketing must already be the final URL.
 9. **Always answer JSON errors** with `message`/`error`/`detail`/`errors` and a correct status (401 missing token, 403 wrong token, 404 post to update not found, 422 payload, 500 only for real crashes). HTML error pages (WAF, framework debug) make the failure unreadable for the user.
 10. **Authorization header must reach the app.** Shared hosting (Apache + CGI/FastCGI) often drops it; fix per `references/troubleshooting.md` before debugging anything else.
@@ -59,7 +59,7 @@ Run `python scripts/smoke_test_api.py --base-url <website_url> --token <raw toke
 - No redirect on the API; missing/wrong token rejected; valid token passes.
 - Categories shape; names present; no duplicates/"Uncategorized".
 - Create with 3 images + a 1500-char image URL + unknown category + long title/description + extra fields → 2xx with absolute `url` under 30s, no local path in the URL.
-- Page shows the images; retry of the same payload does not create a second post.
+- The page shows all 3 images **with their original CDN URLs** (WARN if the site rewrote or re-hosted them); retry of the same payload does not create a second post.
 - Update by `published_url` keeps the same URL and changes the content (no new post).
 
 Also add feature tests in the customer project for the same cases (see the stack reference).
