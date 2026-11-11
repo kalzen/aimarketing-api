@@ -1,5 +1,4 @@
 interface:
   display_name: "AI Marketing API"
-  short_description: "Build customer publish APIs"
-  default_prompt: "Use $aimarketing-api to add an AI Marketing compatible publish API gateway, including secure token generation."
-
+  short_description: "Build and verify customer publish APIs"
+  default_prompt: "Use $aimarketing-api to add an AI Marketing compatible publish API gateway (ping, categories for AI category suggestion, create, update by published_url, multiple images) with secure token generation, then validate it with scripts/smoke_test_api.py."

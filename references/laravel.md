@@ -1,41 +1,37 @@
 # Laravel Implementation Pattern
 
-Use this for Laravel customer projects. Follow the customer's existing Laravel version and conventions.
+Use for Laravel customer sites. Follow the project's Laravel version and conventions (these snippets target Laravel 11/12). A working reference implementation exists in the Kalzen customer site `tiengtrungv2` (`AiMarketingPostController`, `AiMarketingPostService`, `EnsureAiMarketingToken`); the pattern below fixes its weak spots (strict validation, no upsert, no idempotency).
 
 ## Config
 
-Add environment keys:
-
 ```env
-AI_MARKETING_API_TOKEN=
 AI_MARKETING_API_TOKEN_HASH=
 AI_MARKETING_DEFAULT_AUTHOR_ID=
-AI_MARKETING_DEFAULT_STATUS=publish
+AI_MARKETING_DEFAULT_STATUS=published
+AI_MARKETING_DEFAULT_CATEGORY_SLUG=
 ```
 
-Prefer `AI_MARKETING_API_TOKEN_HASH` over storing the raw token for new projects. If AI Marketing is already configured to send and store a raw token, use `AI_MARKETING_API_TOKEN` consistently and compare raw token to raw token.
+```php
+// config/services.php
+'ai_marketing' => [
+    'token_hash' => env('AI_MARKETING_API_TOKEN_HASH'),
+    'token' => env('AI_MARKETING_API_TOKEN'), // only for raw-token projects
+    'default_author_id' => env('AI_MARKETING_DEFAULT_AUTHOR_ID'),
+    'default_status' => env('AI_MARKETING_DEFAULT_STATUS', 'published'),
+    'default_category_slug' => env('AI_MARKETING_DEFAULT_CATEGORY_SLUG'),
+],
+```
 
-## Token Command
+Never call `env()` outside config. Prefer the hash; if the project is already configured with a raw token, compare raw to raw and do not hash either side.
 
-Create an Artisan command such as `aimarketing:token`.
-
-Behavior:
-
-1. Generate a random token with at least 32 bytes of entropy.
-2. Print the raw token once.
-3. Print `hash('sha256', $token)`.
-4. Optionally write the hash to `.env` only if the project already has a safe local env writer pattern.
-
-PHP token generation:
+## Token command
 
 ```php
 $token = 'amkt_'.bin2hex(random_bytes(32));
-$hash = hash('sha256', $token);
+$hash = hash('sha256', $token); // print the raw token once, store the hash
 ```
 
-## Middleware
-
-Validate Bearer token:
+## Middleware (`ai-marketing.token`)
 
 ```php
 $incoming = $request->bearerToken();
@@ -44,79 +40,192 @@ $expectedHash = config('services.ai_marketing.token_hash');
 if (! is_string($incoming) || $incoming === '' || ! is_string($expectedHash) || $expectedHash === '') {
     return response()->json(['message' => 'Missing AI Marketing token'], 401);
 }
-
 if (! hash_equals($expectedHash, hash('sha256', $incoming))) {
     return response()->json(['message' => 'Invalid AI Marketing token'], 403);
 }
+
+return $next($request);
 ```
 
-Raw-token projects should use a separate config value and compare without hashing:
+Raw-token variant: `hash_equals((string) config('services.ai_marketing.token'), $incoming)`.
+
+Always answer JSON for API errors (`bootstrap/app.php`):
 
 ```php
-$incoming = $request->bearerToken();
-$expectedToken = config('services.ai_marketing.token');
-
-if (! is_string($incoming) || $incoming === '' || ! is_string($expectedToken) || $expectedToken === '') {
-    return response()->json(['message' => 'Missing AI Marketing token'], 401);
-}
-
-if (! hash_equals($expectedToken, $incoming)) {
-    return response()->json(['message' => 'Invalid AI Marketing token'], 403);
-}
+->withExceptions(function (Exceptions $exceptions) {
+    $exceptions->shouldRenderJsonWhen(fn ($request) => $request->is('api/*') || $request->expectsJson());
+})
 ```
 
-Do not call `env()` outside config files.
-
-## Routes
-
-Prefer routes in `routes/api.php`:
+## Routes (`routes/api.php`)
 
 ```php
 Route::middleware('ai-marketing.token')->group(function () {
-    Route::get('/ping', [AiMarketingPostApiController::class, 'ping']);
-    Route::get('/posts/categories', [AiMarketingPostApiController::class, 'categories']);
-    Route::post('/posts', [AiMarketingPostApiController::class, 'store']);
-    Route::put('/posts', [AiMarketingPostApiController::class, 'update']);
+    Route::get('/ping', [AiMarketingPostController::class, 'ping']);
+    Route::get('/posts/categories', [AiMarketingPostController::class, 'categories']);
+    Route::post('/posts', [AiMarketingPostController::class, 'store']);  // create, or update when published_url is present
+    Route::put('/posts', [AiMarketingPostController::class, 'update']);
 });
 ```
 
-If the customer app already uses API versioning, put the routes under its existing prefix and tell the AI Marketing user to configure custom paths.
+If the app already versions its API, mount the same routes under that prefix and give the operator the `api_*_path` values.
 
-## Controller Behavior
+## Lenient Form Request
 
-`store`:
+```php
+public function rules(): array
+{
+    return [
+        'published_url' => ['nullable', 'string', 'max:2048'],
+        'title' => ['required', 'string', 'max:500'],
+        'body' => ['required', 'string'],
+        'description' => ['nullable', 'string', 'max:1000'],
+        'faq' => ['nullable', 'array'],
+        'faq.*.question' => ['nullable', 'string', 'max:500'],
+        'faq.*.answer' => ['nullable', 'string', 'max:5000'],
+        'image_urls' => ['nullable', 'array', 'max:20'],
+        'image_urls.*' => ['nullable', 'string', 'max:2048'],
+        'category_id' => ['nullable', 'string', 'max:255'],
+        'category_slug' => ['nullable', 'string', 'max:255'],
+    ];
+}
+```
 
-- Validate `title` and `body`.
-- Resolve category by `category_id` first, then `category_slug`.
-- Create post with HTML body.
-- Attach or import images only if the app has an existing media flow. Otherwise store `image_urls` as meta.
-- If storing the first image URL as a thumbnail, make the column `text` or otherwise support at least the request validation length. CDN and signed URLs commonly exceed 255 characters and will produce SQL `Data too long for column 'thumbnail'` errors if saved to a default string column.
-- Return absolute URL.
+Do not add `exists:` for categories and do not reject unknown keys (`force_replace_images`, `replace_images`).
 
-`update`:
+## Migration
 
-- Validate `published_url`, `title`, `body`.
-- Find post by current permalink/slug/canonical URL mapping.
-- Update the same post, not create a new one.
-- Return `{ "success": true }` or the new URL.
+```php
+$table->text('thumbnail')->nullable()->change();   // never varchar(255)
+$table->json('images')->nullable();                // every image_urls entry, in order
+$table->string('aimkt_key', 40)->nullable()->index(); // idempotency key
+```
 
-## Tests
+## Controller
 
-Add feature tests for:
+```php
+public function store(PostPayloadRequest $request): JsonResponse
+{
+    if (filled($request->validated('published_url'))) {
+        return $this->update($request); // POST with published_url = update (default AI Marketing update method)
+    }
 
-- Invalid token rejected.
-- Raw-token or hash-token comparison matches the chosen config style.
-- Ping works with valid token.
-- Categories response shape.
-- Store returns URL.
-- Store accepts an image URL longer than 255 characters when the implementation stores remote thumbnail URLs.
-- Update by `published_url` updates the same post.
+    $post = $this->posts->create($request->validated());
 
-## Production URL Validation
+    return response()->json(['url' => $this->posts->publicUrl($post)], 201);
+}
 
-If the Laravel customer site uses Inertia, Wayfinder, Ziggy, cached routes, or generated frontend route helpers, verify generated URLs after production build:
+public function update(PostPayloadRequest $request): JsonResponse
+{
+    $post = $this->posts->findByPublishedUrl((string) $request->validated('published_url'));
+    if ($post === null) {
+        return response()->json(['message' => 'Post not found for published_url'], 404);
+    }
 
-1. Set `APP_URL` or the route-generation environment to the real production root domain.
-2. Clear config and route cache before generating route helpers.
-3. Rebuild frontend assets.
-4. Grep generated route/action files and built bundles for local path fragments such as `/project/public`, `/aimarketing/public`, or `/tiengtrungv2/public`.
+    $post = $this->posts->update($post, $request->validated());
+
+    return response()->json(['success' => true, 'url' => $this->posts->publicUrl($post)]);
+}
+```
+
+For `PUT`, `published_url` must be required: add `Rule::requiredIf(fn () => $this->isMethod('put'))` in the request.
+
+## Service essentials
+
+```php
+public function create(array $data): Post
+{
+    $key = sha1($data['title']."\n".$data['body']);
+    $existing = Post::query()->where('aimkt_key', $key)->where('created_at', '>=', now()->subMinutes(15))->first();
+    if ($existing !== null) {
+        return $existing; // AI Marketing retried; do not create a duplicate
+    }
+
+    $images = $this->imageUrls($data);
+
+    return Post::create([
+        'title' => $data['title'],
+        'slug' => $this->uniqueSlug($data['title']),
+        'content' => $this->contentWithFaq($this->normalizeBody($data['body']), $data),
+        'excerpt' => $data['description'] ?? null,
+        'thumbnail' => $images[0] ?? null,
+        'images' => $images,
+        'category_id' => $this->resolveCategory($data)?->id,
+        'aimkt_key' => $key,
+        // status/author from config
+    ]);
+}
+
+private function imageUrls(array $data): array
+{
+    return array_values(array_filter(
+        (array) ($data['image_urls'] ?? []),
+        fn ($url) => is_string($url) && preg_match('#^https?://#i', $url) === 1
+    ));
+}
+```
+
+Update: find by slug from `published_url` (last path segment, tolerate trailing slash/query/scheme/www), update the same row, do not change the slug, only overwrite category/images when provided, keep `aimkt_key` in sync. Return the same public URL.
+
+Category resolution (never throws; mind integer primary keys on Postgres):
+
+```php
+private function resolveCategory(array $data): ?Category
+{
+    $id = $data['category_id'] ?? null;
+    if (is_string($id) && $id !== '' && ctype_digit($id)) {
+        $category = Category::query()->whereKey((int) $id)->where('is_active', true)->first();
+        if ($category !== null) {
+            return $category;
+        }
+    }
+
+    $slug = $data['category_slug'] ?? null;
+    if (is_string($slug) && $slug !== '') {
+        $category = Category::query()->where('slug', $slug)->where('is_active', true)->first();
+        if ($category !== null) {
+            return $category;
+        }
+    }
+
+    $default = config('services.ai_marketing.default_category_slug');
+
+    return filled($default) ? Category::query()->where('slug', $default)->first() : null;
+}
+```
+
+If categories use non-numeric ids (slug/UUID keys), drop the `ctype_digit` guard and look up by the string id.
+
+Body normalisation (AI bodies can have bare text between headings):
+
+```php
+private function normalizeBody(string $body): string
+{
+    // Chữ trần ngay sau thẻ khối/ảnh (chỉ cách một dòng) cũng tách thành đoạn riêng.
+    $body = preg_replace('#(</(?:p|h[1-6]|ul|ol|table|blockquote|figure)>|<img\b[^>]*>)[ \t]*\n(?=\S)#i', "$1\n\n", trim($body)) ?? $body;
+    $blocks = preg_split('/\n{2,}/', $body) ?: [];
+
+    return collect($blocks)->map(function (string $block): string {
+        $block = trim($block);
+        if ($block === '' || preg_match('/^<(p|h[1-6]|ul|ol|table|blockquote|figure|img|div|section)\b/i', $block)) {
+            return $block;
+        }
+
+        return '<p>'.nl2br($block).'</p>';
+    })->filter()->implode("\n");
+}
+```
+
+Sanitise on output (`img`, `h2-h4`, `table`, `figure` allowed; no scripts/iframes) according to the project's existing HTML policy.
+
+URL generation: set production `APP_URL`, trust proxies so URLs are `https`, and verify the returned URL has no `/public` or local path (see troubleshooting).
+
+## Tests (Pest)
+
+- Invalid/missing token → 403/401; valid → ping `{success:true}`.
+- Categories response shape, inactive excluded.
+- Create with 3 images + 1500-char URL + unknown category + 400-char title → 201, url returned, all images stored, `thumbnail` is the first.
+- Same create twice quickly → same URL, one row.
+- `POST` with `published_url` and `PUT` with `published_url` → same row updated, same URL, no new row.
+- Update with unknown `published_url` → 404 JSON.
+- Category by id, by slug, unknown → attached / attached / default.
